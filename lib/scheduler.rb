@@ -1,12 +1,36 @@
 class Scheduler
-  attr_reader :shows_to_update
+
   def initialize
-    local_shows = LocalShowFetcher.fetch_local_update_candidates
-    remote_shows = RemoteShowFetcher.fetch_data
-    @shows_to_update = ShowUpdater.new(local_shows, remote_shows).shows_to_update
+    older_than_one_hour_shows = Show.unscoped.older_than_one_hour
+    never_updated_shows = Show.unscoped.never_updated
+
+    # Merge the results of the two scopes
+    @shows = older_than_one_hour_shows.or(never_updated_shows).index_by(&:id)
+  end
+
+  def shows_to_update
+    @shows_to_update ||= find_shows_to_update
+  end
+
+  def find_shows_to_update
+    url = "https://shows-remote-api.com"
+    data = Faraday.get(url).body
+
+    # Parse the JSON response
+    res = JSON.parse(data, symbolize_names: true)
+
+    res.each_with_object([]) do |show, array|
+      local_show = @shows[show[:id]]
+      array << show[:id] if local_show && (!local_show.last_update || local_show.quantity != show[:quantity])
+    end
   end
 
   def schedule_show_updates
-    ScheduleCalculator.new(@shows_to_update).calculate
+    count = shows_to_update.count
+    return shows_to_update.each_with_index.map {|show, i| [show,i*15]}.to_h if count <= 240
+    offset = 3600.0 / count
+    shows_to_update.each_with_index.map do |show, i|
+      [show,i*offset]
+    end.to_h
   end
 end
